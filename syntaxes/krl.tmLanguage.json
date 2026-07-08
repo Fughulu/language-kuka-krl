@@ -264,7 +264,7 @@
             "4": {
               "patterns": [
                 {
-                  "include": "#function.paramater"
+                  "include": "#function.parameter"
                 }
               ]
             }
@@ -405,7 +405,7 @@
     "storage": {
       "patterns": [
         {
-          "match": "(?i)^\\s*(GLOBAL\\s+)?(ENUM)\\s+(\\S+)",
+          "match": "(?i)^\\s*(GLOBAL\\s+)?(ENUM)\\s+(\\S+)(\\s+.*)?$",
           "captures": {
             "1": {
               "name": "storage.modifier.krl"
@@ -433,7 +433,7 @@
           }
         },
         {
-          "match": "(?i)^\\s*(GLOBAL\\s+)?(STRUC)\\s+(\\S+)",
+          "match": "(?i)^\\s*(GLOBAL\\s+)?(STRUC)\\s+(\\S+)(\\s+.*)?$",
           "captures": {
             "1": {
               "name": "storage.modifier.krl"
@@ -763,6 +763,22 @@
       "patterns": [
         {
           "match": "(?=\\b|\\W)[A-Za-z_$][A-Za-z0-9_$]{0,23}",
+          "name": "variable.struc.krl"
+        }
+      ]
+    },
+    "enum.definition": {
+      "patterns": [
+        {
+          "match": "[A-Za-z_$][A-Za-z0-9_$]{0,23}",
+          "name": "variable.enum.krl"
+        }
+      ]
+    },
+    "struc.definition": {
+      "patterns": [
+        {
+          "match": "[A-Za-z_$][A-Za-z0-9_$]{0,23}",
           "name": "variable.struc.krl"
         }
       ]
