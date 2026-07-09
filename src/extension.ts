@@ -8,7 +8,7 @@ const PROC_DECLARATION = /^\s*(?:GLOBAL\s+)?DEF\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/
 const FUNC_DECLARATION = /^\s*(?:GLOBAL\s+)?DEFFCT\s+\S+\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/i;
 const PROC_DECLARATION_WITH_PARAMS = /^\s*(?:GLOBAL\s+)?DEF\s+[A-Za-z_][A-Za-z0-9_]*\s*\((.*?)\)/i;
 const FUNC_DECLARATION_WITH_PARAMS = /^\s*(?:GLOBAL\s+)?DEFFCT\s+\S+\s+[A-Za-z_][A-Za-z0-9_]*\s*\((.*?)\)/i;
-const VARIABLE_DECLARATION = /^\s*(?:(GLOBAL)\s+)?(?:(DECL)\s+)?(?:(CONST)\s+)?([A-Za-z_][A-Za-z0-9_$]*)\s+(.+)$/i;
+const VARIABLE_DECLARATION = /^\s*((?:(?:GLOBAL|DECL|CONST)\s+)*)?([A-Za-z_][A-Za-z0-9_$]*)\s+(.+)$/i;
 const PROC_END = /^\s*END\b/i;
 const FUNC_END = /^\s*ENDFCT\b/i;
 
@@ -226,12 +226,13 @@ function parseVariableDefinitions(document: vscode.TextDocument): VariableDefini
             continue;
         }
 
-        const typeName = declarationMatch[4].toUpperCase();
+        const modifiers = declarationMatch[1] ?? "";
+        const typeName = declarationMatch[2].toUpperCase();
         if (NON_DECLARATION_TYPES.has(typeName)) {
             continue;
         }
 
-        const variableList = declarationMatch[5].trim();
+        const variableList = declarationMatch[3].trim();
         if (variableList.startsWith("[") || variableList.startsWith("=")) {
             continue;
         }
@@ -242,7 +243,7 @@ function parseVariableDefinitions(document: vscode.TextDocument): VariableDefini
         }
 
         const containingScope = findContainingScope(scopes, line);
-        const isGlobal = Boolean(declarationMatch[1]) || containingScope === undefined;
+        const isGlobal = /\bGLOBAL\b/i.test(modifiers) || containingScope === undefined;
 
         for (const name of names) {
             const range = getNameRange(lineText, line, name);
