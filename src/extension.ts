@@ -307,6 +307,47 @@ async function findGlobalVariableDefinitionsInWorkspace(symbol: string): Promise
     return locations;
 }
 
+function findIdentifierRanges(
+    document: vscode.TextDocument,
+    symbol: string,
+    startLine = 0,
+    endLine = document.lineCount - 1,
+): vscode.Range[] {
+    const ranges: vscode.Range[] = [];
+    const wordRegex = new RegExp(`\\b${escapeRegex(symbol)}\\b`, "ig");
+
+    for (let line = Math.max(0, startLine); line <= Math.min(document.lineCount - 1, endLine); line++) {
+        const rawLine = document.lineAt(line).text;
+        const content = stripComment(rawLine);
+
+        wordRegex.lastIndex = 0;
+        let match = wordRegex.exec(content);
+        while (match) {
+            ranges.push(new vscode.Range(line, match.index, line, match.index + match[0].length));
+            match = wordRegex.exec(content);
+        }
+    }
+
+    return ranges;
+}
+
+function dedupeLocations(locations: vscode.Location[]): vscode.Location[] {
+    const seen = new Set<string>();
+    const result: vscode.Location[] = [];
+
+    for (const location of locations) {
+        const key = `${location.uri.toString()}:${location.range.start.line}:${location.range.start.character}`;
+        if (seen.has(key)) {
+            continue;
+        }
+
+        seen.add(key);
+        result.push(location);
+    }
+
+    return result;
+}
+
 function getNameRange(lineText: string, line: number, name: string): vscode.Range {
     const nameRegex = new RegExp(`\\b${escapeRegex(name)}\\b`, "i");
     const match = nameRegex.exec(lineText);
@@ -475,6 +516,57 @@ class KrlReferenceProvider implements vscode.ReferenceProvider {
             return [];
         }
 
+        const variableDefinitionsInDocument = parseVariableDefinitions(document);
+        const bestLocalVariable = getBestLocalVariableDefinition(variableDefinitionsInDocument, symbol, position.line);
+        if (bestLocalVariable) {
+            const localReferences: vscode.Location[] = [];
+            const scopeStart = bestLocalVariable.scopeStartLine ?? 0;
+            const scopeEnd = bestLocalVariable.scopeEndLine ?? (document.lineCount - 1);
+
+            const localRanges = findIdentifierRanges(document, symbol, scopeStart, scopeEnd);
+            for (const range of localRanges) {
+                const isDeclaration = range.start.line === bestLocalVariable.declarationLine
+                    && range.start.character === bestLocalVariable.location.range.start.character;
+
+                if (!context.includeDeclaration && isDeclaration) {
+                    continue;
+                }
+
+                localReferences.push(new vscode.Location(document.uri, range));
+            }
+
+            return dedupeLocations(localReferences);
+        }
+
+        const globalVariableDefinitions = await findGlobalVariableDefinitionsInWorkspace(symbol);
+        if (globalVariableDefinitions.length > 0) {
+            const documents = await getKrlDocuments();
+            const globalReferences: vscode.Location[] = [];
+
+            const declarationKeys = new Set<string>();
+            for (const location of globalVariableDefinitions) {
+                declarationKeys.add(`${location.uri.toString()}:${location.range.start.line}:${location.range.start.character}`);
+            }
+
+            if (context.includeDeclaration) {
+                globalReferences.push(...globalVariableDefinitions);
+            }
+
+            for (const textDocument of documents) {
+                const ranges = findIdentifierRanges(textDocument, symbol);
+                for (const range of ranges) {
+                    const key = `${textDocument.uri.toString()}:${range.start.line}:${range.start.character}`;
+                    if (!context.includeDeclaration && declarationKeys.has(key)) {
+                        continue;
+                    }
+
+                    globalReferences.push(new vscode.Location(textDocument.uri, range));
+                }
+            }
+
+            return dedupeLocations(globalReferences);
+        }
+
         const documents = await getKrlDocuments();
         const references: vscode.Location[] = [];
 
@@ -490,7 +582,7 @@ class KrlReferenceProvider implements vscode.ReferenceProvider {
             }
         }
 
-        return references;
+        return dedupeLocations(references);
     }
 }
 
