@@ -385,6 +385,161 @@ function parseFunctionDefinitions(document: vscode.TextDocument): FunctionDefini
     return definitions;
 }
 
+type BlockPattern = {
+    start: RegExp;
+    end: RegExp;
+    kind: vscode.SymbolKind;
+    getName: (lineText: string) => string;
+    getSelectionRange?: (lineText: string, line: number) => vscode.Range;
+};
+
+type OpenBlock = {
+    symbol: vscode.DocumentSymbol;
+    end: RegExp;
+};
+
+const BLOCK_PATTERNS: BlockPattern[] = [
+    {
+        start: /^\s*(?:GLOBAL\s+)?DEFFCT\b/i,
+        end: /^\s*ENDFCT\b/i,
+        kind: vscode.SymbolKind.Function,
+        getName: (lineText) => parseDefinitionLine(lineText) ?? "DEFFCT",
+        getSelectionRange: (lineText, line) => {
+            const name = parseDefinitionLine(lineText) ?? "DEFFCT";
+            return getNameRange(lineText, line, name);
+        },
+    },
+    {
+        start: /^\s*(?:GLOBAL\s+)?DEF\b/i,
+        end: /^\s*END\b/i,
+        kind: vscode.SymbolKind.Function,
+        getName: (lineText) => parseDefinitionLine(lineText) ?? "DEF",
+        getSelectionRange: (lineText, line) => {
+            const name = parseDefinitionLine(lineText) ?? "DEF";
+            return getNameRange(lineText, line, name);
+        },
+    },
+    {
+        start: /^\s*IF\b/i,
+        end: /^\s*ENDIF\b/i,
+        kind: vscode.SymbolKind.Namespace,
+        getName: (lineText) => stripComment(lineText).trim(),
+    },
+    {
+        start: /^\s*FOR\b/i,
+        end: /^\s*ENDFOR\b/i,
+        kind: vscode.SymbolKind.Namespace,
+        getName: (lineText) => stripComment(lineText).trim(),
+    },
+    {
+        start: /^\s*LOOP\b/i,
+        end: /^\s*ENDLOOP\b/i,
+        kind: vscode.SymbolKind.Namespace,
+        getName: (lineText) => stripComment(lineText).trim(),
+    },
+    {
+        start: /^\s*REPEAT\b/i,
+        end: /^\s*UNTIL\b/i,
+        kind: vscode.SymbolKind.Namespace,
+        getName: (lineText) => stripComment(lineText).trim(),
+    },
+    {
+        start: /^\s*WHILE\b/i,
+        end: /^\s*ENDWHILE\b/i,
+        kind: vscode.SymbolKind.Namespace,
+        getName: (lineText) => stripComment(lineText).trim(),
+    },
+    {
+        start: /^\s*SWITCH\b/i,
+        end: /^\s*ENDSWITCH\b/i,
+        kind: vscode.SymbolKind.Namespace,
+        getName: (lineText) => stripComment(lineText).trim(),
+    },
+];
+
+function closeMatchingBlock(
+    stack: OpenBlock[],
+    lineText: string,
+    line: number,
+): boolean {
+    for (let index = stack.length - 1; index >= 0; index--) {
+        if (!stack[index].end.test(lineText)) {
+            continue;
+        }
+
+        const [closedBlock] = stack.splice(index, 1);
+        closedBlock.symbol.range = new vscode.Range(
+            closedBlock.symbol.range.start,
+            documentLineEnd(lineText, line),
+        );
+        return true;
+    }
+
+    return false;
+}
+
+function documentLineEnd(lineText: string, line: number): vscode.Position {
+    return new vscode.Position(line, lineText.length);
+}
+
+function parseDocumentSymbols(document: vscode.TextDocument): vscode.DocumentSymbol[] {
+    const roots: vscode.DocumentSymbol[] = [];
+    const stack: OpenBlock[] = [];
+
+    for (let line = 0; line < document.lineCount; line++) {
+        const rawLineText = document.lineAt(line).text;
+        const lineText = stripComment(rawLineText);
+        if (lineText.trim().length === 0) {
+            continue;
+        }
+
+        closeMatchingBlock(stack, lineText, line);
+
+        const blockPattern = BLOCK_PATTERNS.find((pattern) => pattern.start.test(lineText));
+        if (!blockPattern) {
+            continue;
+        }
+
+        const symbolRange = new vscode.Range(line, 0, line, rawLineText.length);
+        const selectionRange = blockPattern.getSelectionRange?.(rawLineText, line)
+            ?? symbolRange;
+        const symbol = new vscode.DocumentSymbol(
+            blockPattern.getName(rawLineText),
+            "KRL",
+            blockPattern.kind,
+            symbolRange,
+            selectionRange,
+        );
+
+        if (stack.length === 0) {
+            roots.push(symbol);
+        } else {
+            stack[stack.length - 1].symbol.children.push(symbol);
+        }
+
+        stack.push({
+            symbol,
+            end: blockPattern.end,
+        });
+    }
+
+    const lastLine = Math.max(document.lineCount - 1, 0);
+    const lastLineText = document.lineAt(lastLine).text;
+    while (stack.length > 0) {
+        const openBlock = stack.pop();
+        if (!openBlock) {
+            continue;
+        }
+
+        openBlock.symbol.range = new vscode.Range(
+            openBlock.symbol.range.start,
+            documentLineEnd(lastLineText, lastLine),
+        );
+    }
+
+    return roots;
+}
+
 async function getKrlDocuments(): Promise<vscode.TextDocument[]> {
     const docsByUri = new Map<string, vscode.TextDocument>();
 
@@ -462,15 +617,8 @@ function findCallRanges(document: vscode.TextDocument, symbol: string): vscode.R
 }
 
 class KrlDocumentSymbolProvider implements vscode.DocumentSymbolProvider {
-    public provideDocumentSymbols(document: vscode.TextDocument): vscode.SymbolInformation[] {
-        return parseFunctionDefinitions(document).map((definition) => {
-            return new vscode.SymbolInformation(
-                definition.name,
-                vscode.SymbolKind.Function,
-                "KRL",
-                definition.location,
-            );
-        });
+    public provideDocumentSymbols(document: vscode.TextDocument): vscode.DocumentSymbol[] {
+        return parseDocumentSymbols(document);
     }
 }
 
@@ -587,6 +735,54 @@ class KrlReferenceProvider implements vscode.ReferenceProvider {
     }
 }
 
+class KrlFoldingRangeProvider implements vscode.FoldingRangeProvider {
+    public provideFoldingRanges(document: vscode.TextDocument): vscode.FoldingRange[] {
+        const ranges: vscode.FoldingRange[] = [];
+
+        // Patterns for control structures
+        const controlStructures: Array<{
+            start: RegExp;
+            end: RegExp;
+        }> = [
+            { start: /^\s*IF\b/i, end: /^\s*ENDIF\b/i },
+            { start: /^\s*LOOP\b/i, end: /^\s*ENDLOOP\b/i },
+            { start: /^\s*REPEAT\b/i, end: /^\s*UNTIL\b/i },
+            { start: /^\s*WHILE\b/i, end: /^\s*ENDWHILE\b/i },
+            { start: /^\s*SWITCH\b/i, end: /^\s*ENDSWITCH\b/i },
+            { start: /^\s*FOR\b/i, end: /^\s*ENDFOR\b/i },
+            { start: /^\s*(?:GLOBAL\s+)?DEFFCT\b/i, end: /^\s*ENDFCT\b/i },
+            { start: /^\s*(?:GLOBAL\s+)?DEF\b/i, end: /^\s*END\b/i },
+        ];
+
+        const stack: Array<{ start: number; pattern: RegExp }> = [];
+
+        for (let line = 0; line < document.lineCount; line++) {
+            const lineText = document.lineAt(line).text;
+
+            // Check for end patterns
+            for (let i = stack.length - 1; i >= 0; i--) {
+                if (stack[i].pattern.test(lineText)) {
+                    const { start } = stack.pop()!;
+                    if (line > start) {
+                        ranges.push(new vscode.FoldingRange(start, line));
+                    }
+                    break;
+                }
+            }
+
+            // Check for start patterns
+            for (const structure of controlStructures) {
+                if (structure.start.test(lineText)) {
+                    stack.push({ start: line, pattern: structure.end });
+                    break;
+                }
+            }
+        }
+
+        return ranges;
+    }
+}
+
 export function activate(context: vscode.ExtensionContext) {
     vscode.languages.setLanguageConfiguration("krl", {
         indentationRules: {
@@ -601,5 +797,6 @@ export function activate(context: vscode.ExtensionContext) {
         vscode.languages.registerDocumentSymbolProvider(KRL_SELECTOR, new KrlDocumentSymbolProvider()),
         vscode.languages.registerDefinitionProvider(KRL_SELECTOR, new KrlDefinitionProvider()),
         vscode.languages.registerReferenceProvider(KRL_SELECTOR, new KrlReferenceProvider()),
+        vscode.languages.registerFoldingRangeProvider(KRL_SELECTOR, new KrlFoldingRangeProvider()),
     );
 }
